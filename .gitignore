@@ -1,0 +1,28 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Obsidian
+.obsidian/
+.trash/
+
+# Never commit: raw exports, credentials, live config pulled from the manager
+*.pcap
+*.evtx
+secrets/
+credentials*
+*_secret*
+ossec.conf
+agent.conf
+*.key
+*.pem
+
+# Working / unsorted screenshots
+unused/
+**/unused/

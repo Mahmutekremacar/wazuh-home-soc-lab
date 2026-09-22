@@ -1,0 +1,120 @@
+<!--
+  Home SOC & Detection Engineering Lab — custom Wazuh rules
+  File on the manager: /var/ossec/etc/rules/local_rules.xml
+  Wazuh 4.14.7
+
+  Validate before restarting the manager:
+      sudo /var/ossec/bin/wazuh-analysisd -t
+      sudo systemctl restart wazuh-manager
+-->
+
+<group name="local,windows,sysmon,">
+
+  <!--
+    ===================================================================
+    LAB-001 — PowerShell detection, graded by command-line evidence
+    ===================================================================
+
+    Source telemetry : Sysmon Event ID 1 (Process Creation), via
+                       Microsoft-Windows-Sysmon/Operational
+    Parent rule      : 61603 (Wazuh's Sysmon process-creation rule, level 0)
+
+    Design note
+    -----------
+    Wazuh emits ONE alert per event: the most specific matching rule wins.
+    These four rules are therefore independent, self-contained detections
+    ordered by specificity — NOT a cascade. A command line containing a
+    download indicator and an execution verb produces 100103 only, never
+    100100 + 100102 + 100103.
+
+    Multiple <field> conditions inside one rule are a logical AND.
+
+    Severity escalates on evidence in the command line, not on the
+    presence of powershell.exe. Alerting on every powershell.exe is not a
+    detection, it is a noise generator.
+  -->
+
+  <!-- Level 3 — baseline visibility. Deliberately low: this fires on
+       normal administrative PowerShell use and exists to establish a
+       baseline, not to be triaged. -->
+  <rule id="100100" level="3">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image">(?i)\\powershell\.exe$</field>
+    <description>HOME-SOC: PowerShell execution detected</description>
+    <mitre>
+      <id>T1059.001</id>
+    </mitre>
+  </rule>
+
+  <!-- Level 6 — suspicious execution flags. Bypassing execution policy or
+       hiding the window is legitimate in automation, but it is also the
+       first thing a dropper does. Worth a look, not worth a page. -->
+  <rule id="100101" level="6">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image">(?i)\\powershell\.exe$</field>
+    <field name="win.eventdata.commandLine">(?i)(-ExecutionPolicy\s+Bypass|-WindowStyle\s+Hidden)</field>
+    <description>HOME-SOC: PowerShell with suspicious execution flags</description>
+    <mitre>
+      <id>T1059.001</id>
+    </mitre>
+  </rule>
+
+  <!-- Level 8 — remote content retrieval. PowerShell being used as a
+       download client. -->
+  <rule id="100102" level="8">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image">(?i)\\powershell\.exe$</field>
+    <field name="win.eventdata.commandLine">(?i)(WebClient|DownloadFile|DownloadString|Invoke-WebRequest)</field>
+    <description>HOME-SOC: PowerShell download activity detected</description>
+    <mitre>
+      <id>T1059.001</id>
+      <id>T1105</id>
+    </mitre>
+  </rule>
+
+  <!-- Level 10 — download AND execute in a single command line. The two
+       <field> conditions on commandLine are ANDed, which is what makes
+       this materially stronger than 100102 alone: retrieval plus an
+       execution verb is the download-cradle pattern. -->
+  <rule id="100103" level="10">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.image">(?i)\\powershell\.exe$</field>
+    <field name="win.eventdata.commandLine">(?i)(WebClient|DownloadFile|DownloadString|Invoke-WebRequest)</field>
+    <field name="win.eventdata.commandLine">(?i)(Start-Process|Invoke-Expression|\biex\b|&amp;\s*\()</field>
+    <description>HOME-SOC: PowerShell download and execute pattern detected</description>
+    <mitre>
+      <id>T1059.001</id>
+      <id>T1105</id>
+    </mitre>
+  </rule>
+
+
+  <!--
+    ===================================================================
+    LAB-002 — RETIRED. Kept as documentation, deliberately not active.
+    ===================================================================
+
+    Rule 100200 correlated repeated failed Windows logons for the same
+    account. It is structurally correct and was a useful exercise in
+    frequency / timeframe / if_matched_sid / same_field.
+
+    It was retired because Wazuh's BUILT-IN rule 60204 ("Multiple Windows
+    Logon Failures", level 10, frequency 8, already tagged T1110 and
+    mapped to PCI DSS, NIST 800-53, GDPR, HIPAA and TSC) does exactly the
+    same job. Shipping both would produce two alerts for one behaviour.
+
+    The transferable lesson: before writing a new SIEM detection, check
+    whether the platform already covers it. Writing this rule is how the
+    built-in one was found — shipping it would have made the ruleset worse.
+
+  <rule id="100200" level="10" frequency="5" timeframe="120">
+    <if_matched_sid>60122</if_matched_sid>
+    <same_field>win.eventdata.targetUserName</same_field>
+    <description>HOME-SOC: Multiple failed Windows logons for the same account</description>
+    <mitre>
+      <id>T1110</id>
+    </mitre>
+  </rule>
+  -->
+
+</group>
