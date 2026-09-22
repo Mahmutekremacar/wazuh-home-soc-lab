@@ -1,0 +1,182 @@
+<!--
+  Home SOC & Detection Engineering Lab
+  Wazuh agent configuration snippets — WIN11-01 (Windows 11 Pro)
+
+  File on the endpoint: C:\Program Files (x86)\ossec-agent\ossec.conf
+  Agent version: 4.14.7
+
+  THESE ARE SNIPPETS, NOT A COMPLETE ossec.conf.
+  They are the blocks that were added or changed for these labs, lifted out of
+  the operational file. Merge them into the existing sections of your own
+  ossec.conf — do not paste this file over it, and never create a second
+  <syscheck> or <client> block.
+
+  Addresses are placeholders: <WAZUH_SERVER_IP>.
+
+  Restart the agent after any change. Restart-Service WazuhSvc frequently
+  fails with "cannot be stopped" on Windows; use:
+      net stop wazuh
+      net start wazuh
+
+  Then confirm the agent actually PARSED the change — present in the file and
+  loaded into the running agent are two different claims:
+      Get-Content "C:\Program Files (x86)\ossec-agent\ossec.log" -Tail 100
+-->
+
+<!--
+  ===================================================================
+  1. Manager connection and enrollment
+  ===================================================================
+
+  The <enrollment> block with an explicit <agent_name> is the important
+  part, and it was added only after an incident.
+
+  Changing <address> does NOT change an agent's identity — identity comes
+  from enrollment and the client key. When the agent re-enrolled during
+  unrelated network churn with no <agent_name> set, Wazuh fell back to the
+  Windows hostname and silently created a SECOND agent entry. The original
+  went 'disconnected' and looked like a network fault.
+
+  Pin the name at build time. See docs/troubleshooting.md §6.
+-->
+<client>
+  <server>
+    <address><WAZUH_SERVER_IP></address>
+    <port>1514</port>
+    <protocol>tcp</protocol>
+  </server>
+
+  <enrollment>
+    <enabled>yes</enabled>
+    <manager_address><WAZUH_SERVER_IP></manager_address>
+    <port>1515</port>
+    <agent_name>WIN11-01</agent_name>
+  </enrollment>
+</client>
+
+
+<!--
+  ===================================================================
+  2. Sysmon collection  —  LAB-001
+  ===================================================================
+
+  Native Windows logging says a process started. Sysmon Event ID 1 carries
+  the full command line, the parent image and the process hashes, which is
+  what the custom rules 100100-100103 match on. Without this block those
+  rules have nothing to read.
+
+  Sysmon itself runs in its DEFAULT configuration here
+  (Sysmon64.exe -accepteula -i) — no curated ruleset. That keeps the
+  pipeline simple while the rule logic is being validated; swapping in a
+  curated config is Phase 2 work.
+
+  Note: Wazuh maps Sysmon Event ID 1 to built-in rule 61603, which is
+  LEVEL 0 and raises no alert by design. Telemetry arriving correctly and
+  an empty Threat Hunting view are entirely compatible.
+-->
+<localfile>
+  <location>Microsoft-Windows-Sysmon/Operational</location>
+  <log_format>eventchannel</log_format>
+</localfile>
+
+
+<!--
+  ===================================================================
+  3. File Integrity Monitoring  —  LAB-003
+  ===================================================================
+
+  Goes INSIDE the existing <syscheck> block. The block below shows it in
+  context; copy only the <directories> line into your own <syscheck>.
+
+    check_all      size, permissions, owner, group, mtime, inode,
+                   MD5/SHA-1/SHA-256, attributes. This is what makes the
+                   before/after hash chain possible.
+    realtime       report changes as they happen, not on the next scan.
+    report_changes store a content diff, not just "the hash moved".
+                   It stores file content on the manager — enable it for
+                   specific sensitive paths, never blanket, and never for
+                   paths that could hold secrets.
+
+  The monitored directory must EXIST BEFORE the agent restarts.
+
+  Confirm it was loaded by looking for this line in ossec.log:
+    INFO: (6003): Monitoring path: 'c:\securitylab', with options
+    'size | permissions | owner | group | mtime | inode | hash_md5 |
+     hash_sha1 | hash_sha256 | attributes | report_changes | realtime'.
+-->
+<syscheck>
+  <directories check_all="yes" report_changes="yes" realtime="yes">C:\SecurityLab</directories>
+</syscheck>
+
+
+<!--
+  -------------------------------------------------------------------
+  3b. Who-data  —  ATTEMPTED, NOT OPERATIONAL on this endpoint
+  -------------------------------------------------------------------
+
+  Adding whodata="yes" was intended to attribute each file change to a
+  user, process and PID:
+
+      <directories check_all="yes" report_changes="yes" realtime="yes"
+                   whodata="yes">C:\SecurityLab</directories>
+
+  Every Windows prerequisite was verified independently — File System and
+  Handle Manipulation auditing both 'Success' (queried by GUID, because
+  English subcategory names are rejected on a localized install), a SACL
+  created manually on the directory and confirmed to persist across
+  restarts, and auditpol /backup succeeding with exit code 0.
+
+  The agent still failed inside its own audit-policy initialization:
+
+      ERROR: (6955): Auditpol command failed, attempt number: 1
+      ERROR: (6915): Audit policies could not be auto-configured due to
+                     the Windows version.
+      ERROR: (6916): Local audit policies could not be configured.
+      ERROR: (6710): Failed to start the Whodata engine.
+      Directories/files will be monitored in Realtime mode
+      ERROR: (6646): DeleteAce() failed restoring the SACLs. Error '87'
+
+  Wazuh falls back to realtime mode, which is why FIM kept working. The
+  fallback is visible in the alert data too: syscheck.mode = realtime.
+
+  Root cause is SUSPECTED, not proven — localization and a very recent
+  Windows 11 build are both plausible and the evidence separates neither.
+  The controlled experiment (enable whodata on the English endpoint and
+  compare) has not been run. See labs/LAB-003-file-integrity-monitoring.md.
+-->
+
+
+<!--
+  ===================================================================
+  4. Security Configuration Assessment  —  LAB-004
+  ===================================================================
+
+  SCA is enabled by default in the agent; the setting that matters for the
+  lab is scan_on_start, which makes a restart trigger a fresh assessment.
+  That is how the remediation in LAB-004 was independently re-verified:
+
+      net accounts /minpwage:1     (remediate)
+      net stop wazuh ; net start wazuh   (force a rescan)
+      -> rule 19010, previous_result: failed / result: passed
+
+  The CIS Windows 11 policy ships with the agent at:
+      C:\Program Files (x86)\ossec-agent\ruleset\sca\cis_win11_enterprise.yml
+-->
+<sca>
+  <enabled>yes</enabled>
+  <scan_on_start>yes</scan_on_start>
+  <interval>12h</interval>
+</sca>
+
+
+<!--
+  ===================================================================
+  NEVER PUBLISH
+  ===================================================================
+  client.keys · agent enrollment secrets · authd.pass · dashboard
+  credentials · API keys or tokens · certificates and private keys ·
+  complete operational ossec.conf dumps.
+
+  The repository .gitignore covers these, but a .gitignore is a safety
+  net, not the control. Check before committing.
+-->

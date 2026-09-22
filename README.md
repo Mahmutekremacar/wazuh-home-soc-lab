@@ -15,27 +15,28 @@ Every lab in this repository documents an **expected result**, an **actual resul
 ┌─────────────────────────────┐          ┌──────────────────────────────┐
 │  WIN11-01  (physical)       │          │  Wazuh all-in-one            │
 │  Windows 11 Pro             │          │  Ubuntu Server               │
-│  Wazuh Agent 4.14.7         │──agent──▶│  manager "home"              │
-│  Sysmon (default config)    │  :1514   │  • wazuh-manager             │
-├─────────────────────────────┤          │  • wazuh-indexer             │
-│  WIN10-01  (VM)             │          │  • wazuh-dashboard           │
-│  Windows 10                 │──agent──▶│                              │
-│  Wazuh Agent 4.14.7         │  :1514   │  Wazuh 4.14.7                │
+│  Wazuh Agent 4.14.7         │──agent──▶│  • wazuh-manager             │
+│  Sysmon (default config)    │  :1514   │  • wazuh-indexer             │
+├─────────────────────────────┤          │  • wazuh-dashboard           │
+│  WIN10-01  (VM)             │          │                              │
+│  Windows 10                 │──agent──▶│  Wazuh 4.14.7                │
+│  Wazuh Agent 4.14.7         │  :1514   │                              │
 └─────────────────────────────┘          └──────────────────────────────┘
                     │                                    │
                     └────────── Tailscale ───────────────┘
-                         (flat overlay network,
-                          dashboard reachable from
-                          any enrolled device)
+                         (private overlay — nothing
+                          published to the internet)
 ```
+
+Full detail, including the data-flow diagram, port list, agent configuration and security posture: [`architecture/architecture.md`](architecture/architecture.md).
 
 | Component | Detail |
 |---|---|
 | SIEM | Wazuh 4.14.7, all-in-one deployment on Ubuntu Server |
-| Endpoints | `WIN11-01` (Windows 11 Pro, physical) · `WIN10-01` (Windows 10, VM) |
+| Endpoints | `WIN11-01` (Windows 11 Pro, physical, localized) · `WIN10-01` (Windows 10, VM, English) |
 | Agents | Wazuh Agent 4.14.7, both `active` |
 | Endpoint telemetry | Native Windows event log (System, Security) · Sysmon, default configuration · Wazuh syscheck (FIM) · Wazuh SCA |
-| Network | Tailscale overlay — endpoints and manager on separate physical hosts |
+| Network | Tailscale overlay — endpoints and manager on separate physical hosts, no public exposure |
 
 ![Both agents enrolled and active](screenshots/architecture/agents-enrolled-overview.png)
 
@@ -43,7 +44,7 @@ Every lab in this repository documents an **expected result**, an **actual resul
 
 ![Wazuh dashboard reached over Tailscale from a phone](screenshots/architecture/infra-dashboard-over-tailscale.png)
 
-*The dashboard reached over Tailscale from a mobile device — the overlay network makes the SIEM available without exposing it to the internet.*
+*The dashboard reached over the overlay from a mobile device — remote access without exposing the SIEM to the internet.*
 
 ---
 
@@ -54,7 +55,7 @@ Every lab in this repository documents an **expected result**, an **actual resul
 | **000** | [Telemetry Validation](labs/LAB-000-telemetry-validation.md) | End-to-end pipeline proof and structured fault isolation, before any detection logic is written | `61138` | T1543.003 |
 | **001** | [PowerShell Detection Engineering](labs/LAB-001-powershell-detection.md) | **Custom rules written from scratch** — four tiers grading severity on command-line evidence, tested against benign *and* suspicious input | `100100`–`100103` | T1059.001, T1105 |
 | **002** | [Failed Authentication & Correlation](labs/LAB-002-authentication-correlation.md) | Temporal correlation across many events, and the judgement to retire a custom rule the platform already covered | `60122`, `60204` | T1110 |
-| **003** | [File Integrity Monitoring](labs/LAB-003-file-integrity-monitoring.md) | Stateful real-time FIM — a complete forensic chain across create, modify and delete on one file | `554`, `550`, `553` | T1565.001, T1070.004, T1485 |
+| **003** | [File Integrity Monitoring](labs/LAB-003-file-integrity-monitoring.md) | Stateful real-time FIM with a complete forensic chain — **plus a structured investigation into a feature that did not work** | `554`, `550`, `553` | T1565.001, T1070.004, T1485 |
 | **004** | [Security Configuration Assessment & Remediation](labs/LAB-004-sca-remediation.md) | A full, auditable hardening cycle against CIS Windows 11 v3.0.0, with independent verification of the fix | `19010` (SCA check `26002`) | — (CIS 1.1.3) |
 
 ---
@@ -67,14 +68,19 @@ Every lab in this repository documents an **expected result**, an **actual resul
 
 **The discipline to delete a rule.** LAB-002 documents a working frequency-correlation rule that was written, tested — and then retired, because Wazuh's built-in rule `60204` already did the job. Two alerts for one behaviour is noise. Writing the rule is how the built-in one was found; shipping it would have made the ruleset worse.
 
-**Troubleshooting written up honestly.** Every lab that broke says how and why:
+**A failure investigated properly, and not overclaimed.** LAB-003's Who-data feature never became operational. Every Windows prerequisite — audit policy, directory SACL, `auditpol` itself — was verified independently, the fault was isolated to the vendor's own initialization path, and the root cause is stated as *suspected* rather than invented, with the controlled experiment that would settle it named and recorded as not performed. This is the section that best shows reasoning under uncertainty.
+
+**Troubleshooting written up honestly.** Every lab that broke says how and why — the full set is in [`docs/troubleshooting.md`](docs/troubleshooting.md):
 
 - LAB-000 — the "missing" alert was a Threat Hunting view filtered to the wrong endpoint. *A missing alert has at least four distinct causes, and they should be checked in order.*
 - LAB-001 — the rules did not fire because the **test data** never contained the indicators. *Compare the regex against the real field value in the exported event before editing the pattern.*
 - LAB-002 — `runas` errored *before* authentication was attempted, so no Event 4625 was ever produced. *A tool failing is not the same as an authentication failing.*
+- LAB-003 — Who-data failed with every prerequisite valid. *Isolate by layer, then stop at an honest conclusion.*
 - LAB-004 — the Configuration Assessment panel still showed the check as failed after a successful rescan. *When an aggregated dashboard contradicts the endpoint's own logs, go to the raw events.*
 
 **Evidence over assertion.** LAB-004 is the clearest case: "I changed the setting" is self-reporting, while `previous_result: failed` → `result: passed`, observed by the tool on its own next scan, is independent verification.
+
+The conceptual takeaways, separated from the incidents that produced them: [`docs/lessons-learned.md`](docs/lessons-learned.md).
 
 ---
 
@@ -82,16 +88,29 @@ Every lab in this repository documents an **expected result**, an **actual resul
 
 ```text
 wazuh-home-soc-lab/
-├── README.md                  this file
-├── configs/
-│   └── custom-rules.xml       the custom rule set, commented
+├── README.md                          this file
+├── .gitignore                         blocks client.keys, *.key, ossec.conf, agent.conf
+│
+├── architecture/
+│   └── architecture.md                data flow, hosts, ports, agent config, posture
+│
 ├── labs/
 │   ├── LAB-000-telemetry-validation.md
 │   ├── LAB-001-powershell-detection.md
 │   ├── LAB-002-authentication-correlation.md
 │   ├── LAB-003-file-integrity-monitoring.md
 │   └── LAB-004-sca-remediation.md
+│
+├── configs/
+│   ├── custom-rules.xml               100100–100103, commented; 100200 retired
+│   └── agent-ossec-conf-snippets.xml  client/enrollment, Sysmon, FIM, SCA
+│
+├── docs/
+│   ├── troubleshooting.md             9 issues: symptom → cause → resolution → lesson
+│   └── lessons-learned.md             21 conceptual takeaways
+│
 └── screenshots/
+    ├── README.md                      index + redaction rules
     ├── architecture/
     └── lab-000/ … lab-004/
 ```
@@ -102,7 +121,7 @@ Each lab note follows the same structure: **Objective → Environment → Detect
 
 ## Custom rules
 
-`configs/custom-rules.xml` lives on the manager at `/var/ossec/etc/rules/local_rules.xml`.
+[`configs/custom-rules.xml`](configs/custom-rules.xml) lives on the manager at `/var/ossec/etc/rules/local_rules.xml`.
 
 | Rule | Level | Fires on | MITRE |
 |---|---|---|---|
@@ -119,6 +138,8 @@ sudo /var/ossec/bin/wazuh-analysisd -t
 sudo systemctl restart wazuh-manager
 ```
 
+Agent-side configuration for all four telemetry sources: [`configs/agent-ossec-conf-snippets.xml`](configs/agent-ossec-conf-snippets.xml).
+
 ---
 
 ## Scope and honesty
@@ -128,8 +149,10 @@ Deliberately stated, because a portfolio is worth less than nothing if it overcl
 - **All testing was authorised and benign.** No malware, no exploitation, no live payloads. The PowerShell tests place suspicious-looking *strings* on the command line — `Write-Output` prints them back; nothing is downloaded and nothing is executed. The lab account `WazuhLabUser` was created for the authentication lab and exists nowhere else.
 - **A detection firing is not proof of an attack.** `100103` on Test D is a true-positive detection of a *behaviour*, produced by a test the author ran on his own machine. Both things are true at once, and a SOC analyst has to hold both.
 - **These labs demonstrate visibility of ATT&CK techniques, not tuned production detections for them.** The distinction is kept in every lab note.
+- **Who-data was investigated, not achieved.** Localization is a *suspected* contributing factor, not a proven one, and the experiment that would prove it has not been run.
 - **Sysmon runs in its default configuration.** No curated config (SwiftOnSecurity, Olaf Hartong) was applied — that is Phase 2 work, and the default keeps the pipeline simple while rule logic is being validated.
-- **This is a home lab.** Two endpoints, no domain, no scale. Nothing here has been tested against production alert volume.
+- **This is a home lab.** Two endpoints, standalone, **not** domain-joined. No scale, and nothing here has been tested against production alert volume.
+- **Some posture items are unverified**, and are marked as such in the architecture note rather than presented as hardened.
 - **Phase 2 is not built.** Nothing below this line exists yet.
 
 ---
@@ -137,6 +160,7 @@ Deliberately stated, because a portfolio is worth less than nothing if it overcl
 ## Roadmap — Phase 2 (planned, not built)
 
 - **Active Directory lab** — a domain controller, so that domain authentication, Kerberos and Group Policy-driven hardening can be tested rather than only standalone local accounts.
+- **The Who-data control experiment** — enable `whodata="yes"` on the English endpoint and compare, to separate localization from OS build as the cause of the LAB-003 failure.
 - **Atomic Red Team** — replace hand-written test commands with a standard adversary-emulation harness, giving repeatable coverage measurement instead of one-off tests.
 - **Curated Sysmon configuration** — swap the default config for a tuned one and re-measure what the existing rules still catch.
 - **Sigma / detection-as-code** — author detections as Sigma rules, convert them to the Wazuh backend, and validate them in CI so a rule change is reviewed like code.
@@ -151,4 +175,4 @@ Deliberately stated, because a portfolio is worth less than nothing if it overcl
 - [MITRE ATT&CK](https://attack.mitre.org/)
 - [CIS Microsoft Windows 11 Enterprise Benchmark v3.0.0](https://www.cisecurity.org/cis-benchmarks)
 
-Screenshots are redacted where they showed host identifiers. Some field values render in Turkish because the endpoint runs a localized Windows install.
+Screenshots are redacted where they showed host identifiers — the rules are in [`screenshots/README.md`](screenshots/README.md). Some field values render in a non-English language because one endpoint runs a localized Windows install; that is left visible deliberately, since it is central to two of the labs.
